@@ -4,7 +4,7 @@ unsigned stone_skel_id, type_mineral;
 
 static inline void
 stones_add(unsigned where_ref, struct bio *bio, uint64_t v) {
-	unsigned char n = v & 0x3, i;
+	unsigned char n = v & 0x3;
 
 	if (bio->bio_idx == BIOME_WATER)
 		return;
@@ -24,20 +24,21 @@ stones_add(unsigned where_ref, struct bio *bio, uint64_t v) {
 }
 
 int
-on_spawn(unsigned player_ref, unsigned where_ref, struct bio bio, uint64_t v)
+on_spawn(unsigned player_ref __attribute__((unused)),
+		unsigned where_ref, struct bio bio, uint64_t v)
 {
 	stones_add(where_ref, &bio, v);
 	return 0;
 }
 
-int on_add(unsigned ref, uint64_t v) {
+int on_add(unsigned ref, unsigned type, uint64_t v) {
 	OBJ obj;
 	SKEL skel;
-	nd_get(HD_OBJ, &obj, &ref);
 
-	if (obj.type != type_mineral)
+	if (type != type_mineral)
 		return 1;
 
+	nd_get(HD_OBJ, &obj, &ref);
 	nd_get(HD_SKEL, &skel, &obj.skid);
 	obj.art_id = skel.max_art ? 1 + ((v & 0xf) % skel.max_art) : 0;
 	nd_put(HD_OBJ, &ref, &obj);
@@ -46,8 +47,6 @@ int on_add(unsigned ref, uint64_t v) {
 
 void
 mod_install(void) {
-	unsigned mid;
-
 	type_mineral = nd_put(HD_TYPE, NULL, "mineral");
 
 	SKEL skel = {
