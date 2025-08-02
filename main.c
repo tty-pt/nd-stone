@@ -18,7 +18,7 @@ stones_add(unsigned where_ref, struct bio *bio, uint64_t v) {
 
         for (int i = 0; i < n; i++, v2 >>= 4) {
 		OBJ stone;
-                unsigned stone_ref = object_add(&stone, stone_skel_id, where_ref, v2);
+                unsigned stone_ref = object_add(&stone, stone_skel_id, where_ref, v2, 0);
 		nd_put(HD_OBJ, &stone_ref, &stone);
 	}
 }
