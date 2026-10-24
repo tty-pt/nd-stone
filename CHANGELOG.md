@@ -1,4 +1,12 @@
-## 1.0.1
+## [1.0.2]
+
+- **Declarative DSV Table (`data/stones.dsv`)**:
+  - Exported geological mineral and gem types into declarative `data/stones.dsv` table.
+  - Refactored `src/libnd-stone.c` to load stone definitions dynamically via `nd_table_load()`.
+- **Documentation**:
+  - Standardized README with man-src, art, and modder guide.
+
+## [1.0.1]
 
 - **macOS: link with `-undefined dynamic_lookup`.** macOS `ld` rejects
   undefined symbols in a shared library, but `WARN` needs `qsyslog` — an

@@ -15,6 +15,8 @@
  */
 
 #include <ttypt/xy-mod.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* XXH32 for the art-variant hash. The old module got this from <nd/nd.h>,
  * which is gone; nothing in nd/ exposes it. <xxhash.h> is self-contained
@@ -77,18 +79,34 @@ XY_IMPL(int, on_add, unsigned, ref, unsigned, type, uint64_t, v)
 	return 0;
 }
 
+static int
+stone_row(const char *const *f, size_t n, void *user)
+{
+	(void)user;
+	if (n < 3)
+		return 0;
+	SKEL skel = {
+		.type = type_mineral,
+		.max_art = (unsigned)atoi(f[2]),
+	};
+	strlcpy((char *)skel.name, f[0], sizeof(skel.name));
+	stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
+	return 0;
+}
+
 XY_MODULE_API void
 xy_install(void)
 {
 	type_mineral = nd_put(HD_TYPE, NULL, "mineral");
 
-	SKEL skel = {
-		.name = "stone",
-		.type = type_mineral,
-		.max_art = 17,
-	};
-
-	stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
+	if (nd_table_load("nd-stone", "stones", stone_row, NULL) < 0) {
+		SKEL skel = {
+			.name = "stone",
+			.type = type_mineral,
+			.max_art = 17,
+		};
+		stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
+	}
 
 	WARN("nd-stone: xy_install, type \"mineral\" = %u, skel %u\n",
 		type_mineral, stone_skel_id);
