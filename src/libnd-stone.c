@@ -25,30 +25,98 @@
 #include <xxhash.h>
 
 #include <nd/xy.h>
+#include <nd/core.h>
+#include <nd/stone.h>
+
+/* Mirrors CORE_ET_* in nd-view's type.h (the installed nd/core.h predates it). */
+#ifndef CORE_ET_ASCII
+#define CORE_ET_ASCII 0x80u
+#define CORE_ET_SIDE_MASK 0x03u
+#endif
+
+typedef struct bio (*core_noise_fn)(struct bio bio, uint32_t he, uint32_t w,
+	uint32_t tm, uint32_t cl);
+typedef sic_str_t (*core_empty_tile_fn)(view_tile_t t, unsigned side, sic_str_t ss);
+
+XY_DECL(int, core_noise_decorate, core_noise_fn, fn);
+XY_DECL(int, core_empty_tile_decorate, core_empty_tile_fn, fn);
 
 unsigned stone_skel_id, type_mineral;
 
-static inline void
-stones_add(unsigned where_ref, struct bio *bio, uint64_t v)
+static struct bio
+stone_noise_decorate(struct bio bio, uint32_t he, uint32_t w, uint32_t tm, uint32_t cl)
 {
-	unsigned char n = v & 0x3;
+	(void)cl;
+	stone_tile_t *sd = (stone_tile_t *)&bio.raw[4];
+	memset(sd, 0, sizeof(*sd));
 
-	if (bio->bio_idx == BIOME_WATER)
-		return;
+	if (he <= w || bio.bio_idx == BIOME_WATER)
+		return bio;
 
-	if (!(n && (v & 0x18) && (v & 0x20)))
-		return;
+	uint32_t sv = XXH32(&he, sizeof(uint32_t), 0x5709Eu ^ tm);
+	unsigned char n = sv & 0x3;
+	if (!(n && (sv & 0x18) && (sv & 0x20)))
+		return bio;
 
-	pos_t pos;
-	map_where(pos, where_ref);
-	uint32_t v2 = XXH32((const char *) &v, sizeof(v), 2);
+	unsigned char placed = 0;
+	for (int i = 0; i < n && i < 3; i++) {
+		unsigned side = (unsigned)((sv >> (8 + i * 3)) % 3);
+		if ((placed >> side) & 1)
+			side = (side + 1) % 3;
+		placed |= (unsigned char)(1 << side);
 
-	for (int i = 0; i < n; i++, v2 >>= 4) {
-		OBJ stone;
-		unsigned stone_ref = object_add(&stone, stone_skel_id,
-			where_ref, v2);
-		nd_put(HD_OBJ, &stone_ref, &stone);
+		sd->id[side] = stone_skel_id;
+		/* size: 1 = small stone ('*'), 2 = medium rock ('o'), 3 = big boulder ('O') */
+		unsigned char sz = stone_size_roll(sv >> (16 + i * 3));
+		sd->n |= (unsigned char)(sz << (side * 2));
 	}
+	sd->max = n;
+
+	return bio;
+}
+
+static sic_str_t
+stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
+{
+	/* If cell is already claimed by flora or another decorator, leave it */
+	if (ss.str[0] && ss.str[0] != ' ')
+		return ss;
+
+	const stone_tile_t *sd = (const stone_tile_t *)&t.raw[4];
+	int ascii = side & CORE_ET_ASCII;
+
+	side &= CORE_ET_SIDE_MASK;
+	unsigned char sz = (unsigned char)((sd->n >> (side * 2)) & 3);
+	if (!sz)
+		return ss;
+
+	char *b = ss.str;
+	char glyph;
+	/* The ASCII map only hints at rocks, dim grey (never a bold white O),
+	 * and never draws small stones; flora, entities and stairs already won
+	 * the cell above. map_data (Seven, lamina) gets every mineral. */
+	if (ascii && sz < 2)
+		return ss;
+	switch (sz) {
+	case 1:
+		glyph = '*';
+		b = stpcpy(b, ANSI_FG_WHITE);
+		break;
+	case 2:
+		glyph = 'o';
+		b = stpcpy(b, ascii ? ANSI_BOLD ANSI_FG_BLACK : ANSI_FG_YELLOW);
+		break;
+	case 3:
+		glyph = 'O';
+		b = stpcpy(b, ascii ? ANSI_BOLD ANSI_FG_BLACK : ANSI_BOLD ANSI_FG_WHITE);
+		break;
+	default:
+		return ss;
+	}
+	*b++ = glyph;
+	b = stpcpy(b, ANSI_RESET);
+	*b = '\0';
+	return ss;
 }
 
 /* The old signature was (player_ref, where_ref, bio, v); loc_ref is
@@ -60,7 +128,18 @@ XY_IMPL(int, on_spawn, unsigned, player_ref, unsigned, loc_ref,
 	struct bio, bio, uint64_t, v)
 {
 	(void)player_ref;
-	stones_add(loc_ref, &bio, v);
+	const stone_tile_t *sd = (const stone_tile_t *)&bio.raw[4];
+	for (unsigned s = 0; s < 3; s++) {
+		unsigned char sz = (unsigned char)((sd->n >> (s * 2)) & 3);
+		if (!sz)
+			continue;
+		OBJ stone;
+		uint32_t v2 = (uint32_t)(v ^ (s * 0x9e3779b9u));
+		unsigned stone_ref = object_add(&stone, sd->id[s] ? sd->id[s] : stone_skel_id,
+			loc_ref, v2);
+		if (stone_ref != NOTHING)
+			nd_put(HD_OBJ, &stone_ref, &stone);
+	}
 	return 0;
 }
 
@@ -97,6 +176,7 @@ stone_row(const char *const *f, size_t n, void *user)
 XY_MODULE_API void
 xy_install(void)
 {
+	xy_load("libnd-core");
 	type_mineral = nd_put(HD_TYPE, NULL, "mineral");
 
 	if (nd_table_load("nd-stone", "stones", stone_row, NULL) < 0) {
@@ -107,6 +187,9 @@ xy_install(void)
 		};
 		stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
 	}
+
+	core_noise_decorate(stone_noise_decorate);
+	core_empty_tile_decorate(stone_empty_tile_decorate);
 
 	WARN("nd-stone: xy_install, type \"mineral\" = %u, skel %u\n",
 		type_mineral, stone_skel_id);
