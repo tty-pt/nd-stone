@@ -136,69 +136,85 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 	if (!sz)
 		return ss;
 
-	/* If room is instantiated in the world, check if resource was harvested */
+	/* Determine expected minerals on this tile and this side's rank */
+	int expected_total = 0;
+	int side_rank = 0;
+	for (unsigned s = 0; s < 3; s++) {
+		unsigned char ssz = (unsigned char)((sd->n >> (s * 2)) & 3);
+		if (ssz) {
+			expected_total++;
+			if (s <= side)
+				side_rank++;
+		}
+	}
+
+	/* If room is instantiated in the world, check how many minerals remain */
 	if (t.room != NOTHING && t.room != 0) {
 		unsigned c_hd = nd_table_handle(HD_CONTENTS);
 		if (c_hd) {
 			unsigned c = corm_iter(c_hd, &t.room, CM_RANGE);
 			const void *kp, *vp;
-			int has_mineral = 0;
+			int actual_minerals = 0;
 			while (corm_next(&kp, &vp, c)) {
 				unsigned thing_ref = *(const unsigned *)vp;
 				OBJ obj;
 				if (nd_get(HD_OBJ, &obj, &thing_ref) == 0) {
-					if (obj.type == type_mineral) {
-						has_mineral = 1;
-						break;
-					}
+					if (obj.type == type_mineral)
+						actual_minerals++;
 				}
 			}
 			corm_fin(c);
-			if (!has_mineral) {
-				/* The stone was picked up and is no longer in the room */
+
+			if (actual_minerals < expected_total) {
+				/* At least one mineral was harvested from this tile */
 				OBJ room_obj;
+				int is_claimed = 0;
 				if (nd_get(HD_OBJ, &room_obj, &t.room) == 0) {
 					ROO *rroom = (ROO *)&room_obj.data;
-					if (!(rroom->flags & RF_TEMP) || room_obj.owner != 0) {
-						/* Claimed rooms never replenish stones */
-						return ss;
-					}
+					if (!(rroom->flags & RF_TEMP) || room_obj.owner != 0)
+						is_claimed = 1;
 				}
-				uint32_t now = (uint32_t)time(NULL);
-				int found = -1;
-				for (size_t i = 0; i < s_harvest_n; i++) {
-					if (s_harvest[i].room == t.room) {
-						found = (int)i;
-						break;
-					}
-				}
-				if (found < 0) {
-					if (s_harvest_n < STONE_HARVEST_MAX) {
-						s_harvest[s_harvest_n].room = t.room;
-						s_harvest[s_harvest_n].harvested_at = now;
-						s_harvest_n++;
-					}
-					return ss;
-				}
-				/* If on cooldown, stay harvested */
-				if (now - s_harvest[found].harvested_at < STONE_RESPAWN_COOLDOWN) {
-					return ss;
-				}
-				/* Cooldown expired: check if unobserved */
-				if (is_room_observed(t.room)) {
-					return ss; /* still in view: suppress respawn until players walk away */
-				}
-				/* Unobserved and cooldown expired: respawn the stone! */
-				OBJ stone;
-				uint32_t v2 = (uint32_t)now;
-				unsigned skid = sd->id[side];
-				if (!skid)
-					skid = (sz >= 2 && rock_skel_id != NOTHING) ? rock_skel_id : stone_skel_id;
-				unsigned stone_ref = object_add(&stone, skid, t.room, v2);
-				if (stone_ref != NOTHING)
-					nd_put(HD_OBJ, &stone_ref, &stone);
 
-				s_harvest[found] = s_harvest[--s_harvest_n];
+				if (!is_claimed) {
+					uint32_t now = (uint32_t)time(NULL);
+					int found = -1;
+					for (size_t i = 0; i < s_harvest_n; i++) {
+						if (s_harvest[i].room == t.room) {
+							found = (int)i;
+							break;
+						}
+					}
+					if (found < 0) {
+						if (s_harvest_n < STONE_HARVEST_MAX) {
+							s_harvest[s_harvest_n].room = t.room;
+							s_harvest[s_harvest_n].harvested_at = now;
+							s_harvest_n++;
+						}
+					} else if (now - s_harvest[found].harvested_at >= STONE_RESPAWN_COOLDOWN &&
+					           !is_room_observed(t.room)) {
+						/* Cooldown expired and room unobserved: replenish one mineral for this harvested side */
+						if (actual_minerals < side_rank) {
+							OBJ stone;
+							uint32_t v2 = (uint32_t)now;
+							unsigned skid = sd->id[side];
+							if (!skid)
+								skid = (sz >= 2 && rock_skel_id != NOTHING) ? rock_skel_id : stone_skel_id;
+							unsigned stone_ref = object_add(&stone, skid, t.room, v2);
+							if (stone_ref != NOTHING) {
+								nd_put(HD_OBJ, &stone_ref, &stone);
+								actual_minerals++;
+								if (actual_minerals >= expected_total)
+									s_harvest[found] = s_harvest[--s_harvest_n];
+								else
+									s_harvest[found].harvested_at = now;
+							}
+						}
+					}
+				}
+
+				/* If the count of actual minerals is less than this side's rank, this side is harvested */
+				if (actual_minerals < side_rank)
+					return ss;
 			}
 		}
 	}
