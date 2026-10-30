@@ -136,16 +136,12 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 	if (!sz)
 		return ss;
 
-	/* Determine expected minerals on this tile and this side's rank */
+	/* Determine expected minerals on this tile */
 	int expected_total = 0;
-	int side_rank = 0;
 	for (unsigned s = 0; s < 3; s++) {
 		unsigned char ssz = (unsigned char)((sd->n >> (s * 2)) & 3);
-		if (ssz) {
+		if (ssz)
 			expected_total++;
-			if (s <= side)
-				side_rank++;
-		}
 	}
 
 	/* If room is instantiated in the world, check how many minerals remain */
@@ -155,12 +151,16 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 			unsigned c = corm_iter(c_hd, &t.room, CM_RANGE);
 			const void *kp, *vp;
 			int actual_minerals = 0;
+			int this_side_present = 0;
 			while (corm_next(&kp, &vp, c)) {
 				unsigned thing_ref = *(const unsigned *)vp;
 				OBJ obj;
 				if (nd_get(HD_OBJ, &obj, &thing_ref) == 0) {
-					if (obj.type == type_mineral)
+					if (obj.type == type_mineral) {
 						actual_minerals++;
+						if (obj.data[0] == side)
+							this_side_present = 1;
+					}
 				}
 			}
 			corm_fin(c);
@@ -192,8 +192,8 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 						}
 					} else if (now - s_harvest[found].harvested_at >= STONE_RESPAWN_COOLDOWN &&
 					           !is_room_observed(t.room)) {
-						/* Cooldown expired and room unobserved: replenish one mineral for this harvested side */
-						if (actual_minerals < side_rank) {
+						/* Cooldown expired and room unobserved: replenish if this specific side is absent */
+						if (!this_side_present) {
 							OBJ stone;
 							uint32_t v2 = (uint32_t)now;
 							unsigned skid = sd->id[side];
@@ -201,8 +201,10 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 								skid = (sz >= 2 && rock_skel_id != NOTHING) ? rock_skel_id : stone_skel_id;
 							unsigned stone_ref = object_add(&stone, skid, t.room, v2);
 							if (stone_ref != NOTHING) {
+								stone.data[0] = side;
 								nd_put(HD_OBJ, &stone_ref, &stone);
 								actual_minerals++;
+								this_side_present = 1;
 								if (actual_minerals >= expected_total)
 									s_harvest[found] = s_harvest[--s_harvest_n];
 								else
@@ -212,8 +214,8 @@ stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
 					}
 				}
 
-				/* If the count of actual minerals is less than this side's rank, this side is harvested */
-				if (actual_minerals < side_rank)
+				/* If this specific side is not present, suppress the glyph! */
+				if (!this_side_present)
 					return ss;
 			}
 		}
@@ -269,8 +271,10 @@ XY_IMPL(int, on_spawn, unsigned, player_ref, unsigned, loc_ref,
 			skid = (sz >= 2 && rock_skel_id != NOTHING) ? rock_skel_id : stone_skel_id;
 		unsigned stone_ref = object_add(&stone, skid,
 			loc_ref, v2);
-		if (stone_ref != NOTHING)
+		if (stone_ref != NOTHING) {
+			stone.data[0] = s;
 			nd_put(HD_OBJ, &stone_ref, &stone);
+		}
 	}
 	return 0;
 }
