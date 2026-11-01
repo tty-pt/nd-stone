@@ -67,6 +67,10 @@ has beyond the house pair. `XXH32` is self-contained in that header, so **no
   `obj.art_id = XXH32(&v, sizeof(v), 2) % skel.max_art`, so the same `v` always
   yields the same variant and the world is reproducible.
 
+## Packaged Assets
+
+- **Art (`art/`)**: Geological, mineral, and stone resource graphics stored in `art/mineral/`.
+
 ## Testing
 
 There is no `test.sh` here. Behaviour is asserted by the engine's own suite,

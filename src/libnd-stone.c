@@ -15,6 +15,10 @@
  */
 
 #include <ttypt/xy-mod.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <ttypt/corm.h>
 
 /* XXH32 for the art-variant hash. The old module got this from <nd/nd.h>,
  * which is gone; nothing in nd/ exposes it. <xxhash.h> is self-contained
@@ -23,30 +27,239 @@
 #include <xxhash.h>
 
 #include <nd/xy.h>
+#include <nd/core.h>
+#include <nd/stone.h>
 
-unsigned stone_skel_id, type_mineral;
+/* Mirrors CORE_ET_* in nd-view's type.h (the installed nd/core.h predates it). */
+#ifndef CORE_ET_ASCII
+#define CORE_ET_ASCII 0x80u
+#define CORE_ET_SIDE_MASK 0x03u
+#endif
 
-static inline void
-stones_add(unsigned where_ref, struct bio *bio, uint64_t v)
+unsigned stone_skel_id = NOTHING, rock_skel_id = NOTHING, boulder_skel_id = NOTHING, type_mineral;
+
+static inline unsigned
+mineral_skel_for_size(unsigned char sz)
 {
-	unsigned char n = v & 0x3;
+	if (sz == 3 && boulder_skel_id && boulder_skel_id != NOTHING)
+		return boulder_skel_id;
+	if (sz >= 2 && rock_skel_id && rock_skel_id != NOTHING)
+		return rock_skel_id;
+	if (stone_skel_id && stone_skel_id != NOTHING)
+		return stone_skel_id;
+	return NOTHING;
+}
 
-	if (bio->bio_idx == BIOME_WATER)
-		return;
+static struct bio
+stone_noise_decorate(struct bio bio, uint32_t he, uint32_t w, uint32_t tm, uint32_t cl)
+{
+	(void)cl;
+	stone_tile_t *sd = (stone_tile_t *)&bio.raw[4];
+	memset(sd, 0, sizeof(*sd));
 
-	if (!(n && (v & 0x18) && (v & 0x20)))
-		return;
+	if (he <= w || bio.bio_idx == BIOME_WATER)
+		return bio;
 
-	pos_t pos;
-	map_where(pos, where_ref);
-	uint32_t v2 = XXH32((const char *) &v, sizeof(v), 2);
+	uint32_t sv = XXH32(&he, sizeof(uint32_t), 0x5709Eu ^ tm);
+	unsigned char n = sv & 0x3;
+	if (!(n && (sv & 0x18) && (sv & 0x20)))
+		return bio;
 
-	for (int i = 0; i < n; i++, v2 >>= 4) {
-		OBJ stone;
-		unsigned stone_ref = object_add(&stone, stone_skel_id,
-			where_ref, v2);
-		nd_put(HD_OBJ, &stone_ref, &stone);
+	unsigned char placed = 0;
+	for (int i = 0; i < n && i < 3; i++) {
+		unsigned side = (unsigned)((sv >> (8 + i * 3)) % 3);
+		if ((placed >> side) & 1)
+			side = (side + 1) % 3;
+		placed |= (unsigned char)(1 << side);
+
+		/* size: 1 = small stone ('*'), 2 = medium rock ('o'), 3 = big boulder ('O') */
+		unsigned char sz = stone_size_roll(sv >> (16 + i * 3));
+		sd->id[side] = mineral_skel_for_size(sz);
+		sd->n |= (unsigned char)(sz << (side * 2));
 	}
+	sd->max = n;
+
+	return bio;
+}
+
+#define STONE_HARVEST_MAX 1024
+#define STONE_RESPAWN_COOLDOWN 300 /* 5 minutes */
+
+typedef struct {
+	unsigned room;
+	uint32_t harvested_at;
+} stone_harvest_entry_t;
+
+static stone_harvest_entry_t s_harvest[STONE_HARVEST_MAX];
+static size_t s_harvest_n = 0;
+
+static int is_room_observed(unsigned room_ref)
+{
+	pos_t room_pos;
+	if (map_where(room_pos, room_ref) != 0)
+		return 1; /* safe fallback: assume observed if position unknown */
+
+	unsigned fds_hd = nd_table_handle(HD_FD);
+	if (!fds_hd)
+		return 0;
+
+	unsigned c = corm_iter(fds_hd, NULL, 0);
+	const void *kp, *vp;
+	int observed = 0;
+
+	while (corm_next(&kp, &vp, c)) {
+		unsigned player_ref = *(const unsigned *)kp;
+		OBJ player;
+		if (nd_get(HD_OBJ, &player, &player_ref) != 0)
+			continue;
+		pos_t player_pos;
+		if (map_where(player_pos, player.location) != 0)
+			continue;
+
+		if (player_pos[3] != room_pos[3] || player_pos[2] != room_pos[2])
+			continue;
+
+		int dx = (int)room_pos[0] - (int)player_pos[0];
+		int dy = (int)room_pos[1] - (int)player_pos[1];
+		if (dx < 0) dx = -dx;
+		if (dy < 0) dy = -dy;
+
+		if (dx <= 3 && dy <= 3) {
+			observed = 1;
+			break;
+		}
+	}
+	corm_fin(c);
+	return observed;
+}
+
+static sic_str_t
+stone_empty_tile_decorate(view_tile_t t, unsigned side, sic_str_t ss)
+{
+	/* If cell is already claimed by flora or another decorator, leave it */
+	if (ss.str[0] && ss.str[0] != ' ')
+		return ss;
+
+	const stone_tile_t *sd = (const stone_tile_t *)&t.raw[4];
+	int ascii = side & CORE_ET_ASCII;
+
+	side &= CORE_ET_SIDE_MASK;
+	unsigned char sz = (unsigned char)((sd->n >> (side * 2)) & 3);
+	if (!sz)
+		return ss;
+
+	/* Determine expected minerals on this tile */
+	int expected_total = 0;
+	for (unsigned s = 0; s < 3; s++) {
+		unsigned char ssz = (unsigned char)((sd->n >> (s * 2)) & 3);
+		if (ssz)
+			expected_total++;
+	}
+
+	/* If room is instantiated in the world, check how many minerals remain */
+	if (t.room != NOTHING && t.room != 0) {
+		unsigned c_hd = nd_table_handle(HD_CONTENTS);
+		if (c_hd) {
+			unsigned c = corm_iter(c_hd, &t.room, CM_RANGE);
+			const void *kp, *vp;
+			int actual_minerals = 0;
+			int this_side_present = 0;
+			while (corm_next(&kp, &vp, c)) {
+				unsigned thing_ref = *(const unsigned *)vp;
+				OBJ obj;
+				if (nd_get(HD_OBJ, &obj, &thing_ref) == 0) {
+					if (obj.type == type_mineral) {
+						actual_minerals++;
+						if (obj.data[0] == side)
+							this_side_present = 1;
+					}
+				}
+			}
+			corm_fin(c);
+
+			if (actual_minerals < expected_total) {
+				/* At least one mineral was harvested from this tile */
+				OBJ room_obj;
+				int is_claimed = 0;
+				if (nd_get(HD_OBJ, &room_obj, &t.room) == 0) {
+					ROO *rroom = (ROO *)&room_obj.data;
+					if (!(rroom->flags & RF_TEMP) || room_obj.owner != 0)
+						is_claimed = 1;
+				}
+
+				if (!is_claimed) {
+					uint32_t now = (uint32_t)time(NULL);
+					int found = -1;
+					for (size_t i = 0; i < s_harvest_n; i++) {
+						if (s_harvest[i].room == t.room) {
+							found = (int)i;
+							break;
+						}
+					}
+					if (found < 0) {
+						if (s_harvest_n < STONE_HARVEST_MAX) {
+							s_harvest[s_harvest_n].room = t.room;
+							s_harvest[s_harvest_n].harvested_at = now;
+							s_harvest_n++;
+						}
+					} else if (now - s_harvest[found].harvested_at >= STONE_RESPAWN_COOLDOWN &&
+					           !is_room_observed(t.room)) {
+						/* Cooldown expired and room unobserved: replenish if this specific side is absent */
+						if (!this_side_present) {
+							OBJ stone;
+							uint32_t v2 = (uint32_t)now;
+							unsigned skid = sd->id[side];
+							if (!skid || skid == NOTHING)
+								skid = mineral_skel_for_size(sz);
+							unsigned stone_ref = (skid != NOTHING) ? object_add(&stone, skid, t.room, v2) : NOTHING;
+							if (stone_ref != NOTHING) {
+								stone.data[0] = side;
+								nd_put(HD_OBJ, &stone_ref, &stone);
+								actual_minerals++;
+								this_side_present = 1;
+								if (actual_minerals >= expected_total)
+									s_harvest[found] = s_harvest[--s_harvest_n];
+								else
+									s_harvest[found].harvested_at = now;
+							}
+						}
+					}
+				}
+
+				/* If this specific side is not present, suppress the glyph! */
+				if (!this_side_present)
+					return ss;
+			}
+		}
+	}
+
+	char *b = ss.str;
+	char glyph;
+	/* The ASCII map only hints at rocks, dim grey (never a bold white O),
+	 * and never draws small stones; flora, entities and stairs already won
+	 * the cell above. map_data (Seven, lamina) gets every mineral. */
+	if (ascii && sz < 2)
+		return ss;
+	switch (sz) {
+	case 1:
+		glyph = '*';
+		b = stpcpy(b, ANSI_FG_WHITE);
+		break;
+	case 2:
+		glyph = 'o';
+		b = stpcpy(b, ascii ? ANSI_BOLD ANSI_FG_BLACK : ANSI_FG_YELLOW);
+		break;
+	case 3:
+		glyph = 'O';
+		b = stpcpy(b, ascii ? ANSI_BOLD ANSI_FG_BLACK : ANSI_BOLD ANSI_FG_WHITE);
+		break;
+	default:
+		return ss;
+	}
+	*b++ = glyph;
+	b = stpcpy(b, ANSI_RESET);
+	*b = '\0';
+	return ss;
 }
 
 /* The old signature was (player_ref, where_ref, bio, v); loc_ref is
@@ -58,7 +271,25 @@ XY_IMPL(int, on_spawn, unsigned, player_ref, unsigned, loc_ref,
 	struct bio, bio, uint64_t, v)
 {
 	(void)player_ref;
-	stones_add(loc_ref, &bio, v);
+	const stone_tile_t *sd = (const stone_tile_t *)&bio.raw[4];
+	for (unsigned s = 0; s < 3; s++) {
+		unsigned char sz = (unsigned char)((sd->n >> (s * 2)) & 3);
+		if (!sz)
+			continue;
+		OBJ stone;
+		uint32_t v2 = (uint32_t)(v ^ (s * 0x9e3779b9u));
+		unsigned skid = sd->id[s];
+		if (!skid || skid == NOTHING)
+			skid = mineral_skel_for_size(sz);
+		if (skid == NOTHING)
+			continue;
+		unsigned stone_ref = object_add(&stone, skid,
+			loc_ref, v2);
+		if (stone_ref != NOTHING) {
+			stone.data[0] = s;
+			nd_put(HD_OBJ, &stone_ref, &stone);
+		}
+	}
 	return 0;
 }
 
@@ -77,18 +308,62 @@ XY_IMPL(int, on_add, unsigned, ref, unsigned, type, uint64_t, v)
 	return 0;
 }
 
+static int
+stone_row(const char *const *f, size_t n, void *user)
+{
+	(void)user;
+	if (n < 3)
+		return 0;
+	SKEL skel = {
+		.type = type_mineral,
+		.max_art = (unsigned)atoi(f[2]),
+	};
+	strlcpy((char *)skel.name, f[0], sizeof(skel.name));
+	unsigned id = nd_put(HD_SKEL, NULL, &skel);
+	if (!strcmp(f[0], "boulder"))
+		boulder_skel_id = id;
+	else if (!strcmp(f[0], "rock"))
+		rock_skel_id = id;
+	else
+		stone_skel_id = id;
+	return 0;
+}
+
 XY_MODULE_API void
 xy_install(void)
 {
+	xy_load("libnd-core");
 	type_mineral = nd_put(HD_TYPE, NULL, "mineral");
 
-	SKEL skel = {
-		.name = "stone",
-		.type = type_mineral,
-		.max_art = 17,
-	};
+	(void)nd_table_load("nd-stone", "stones", stone_row, NULL);
 
-	stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
+	if (stone_skel_id == 0 || stone_skel_id == NOTHING) {
+		SKEL skel = {
+			.name = "stone",
+			.type = type_mineral,
+			.max_art = 17,
+		};
+		stone_skel_id = nd_put(HD_SKEL, NULL, &skel);
+	}
+	if (rock_skel_id == 0 || rock_skel_id == NOTHING) {
+		SKEL rskel = {
+			.name = "rock",
+			.type = type_mineral,
+			.max_art = 17,
+		};
+		rock_skel_id = nd_put(HD_SKEL, NULL, &rskel);
+	}
+	if (boulder_skel_id == 0 || boulder_skel_id == NOTHING) {
+		SKEL bskel = {
+			.name = "boulder",
+			.type = type_mineral,
+			.max_art = 17,
+		};
+		boulder_skel_id = nd_put(HD_SKEL, NULL, &bskel);
+	}
+
+	core_noise_decorate(stone_noise_decorate);
+	core_empty_tile_decorate(stone_empty_tile_decorate);
 
 	WARN("nd-stone: xy_install, type \"mineral\" = %u, skel %u\n",
 		type_mineral, stone_skel_id);
