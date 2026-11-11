@@ -55,30 +55,12 @@ stone_noise_decorate(struct bio bio, uint32_t he, uint32_t w, uint32_t tm, uint3
 {
 	(void)cl;
 	stone_tile_t *sd = (stone_tile_t *)&bio.raw[4];
-	memset(sd, 0, sizeof(*sd));
-
-	if (he <= w || bio.bio_idx == BIOME_WATER)
-		return bio;
-
-	uint32_t sv = XXH32(&he, sizeof(uint32_t), 0x5709Eu ^ tm);
-	unsigned char n = sv & 0x3;
-	if (!(n && (sv & 0x18) && (sv & 0x20)))
-		return bio;
-
-	unsigned char placed = 0;
-	for (int i = 0; i < n && i < 3; i++) {
-		unsigned side = (unsigned)((sv >> (8 + i * 3)) % 3);
-		if ((placed >> side) & 1)
-			side = (side + 1) % 3;
-		placed |= (unsigned char)(1 << side);
-
-		/* size: 1 = small stone ('*'), 2 = medium rock ('o'), 3 = big boulder ('O') */
-		unsigned char sz = stone_size_roll(sv >> (16 + i * 3));
-		sd->id[side] = mineral_skel_for_size(sz);
-		sd->n |= (unsigned char)(sz << (side * 2));
-	}
-	sd->max = n;
-
+	unsigned skel_ids[3] = {
+		mineral_skel_for_size(1),
+		mineral_skel_for_size(2),
+		mineral_skel_for_size(3),
+	};
+	nd_stone_noise_eval(sd, he, w, bio.bio_idx, tm, skel_ids);
 	return bio;
 }
 
