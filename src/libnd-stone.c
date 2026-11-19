@@ -291,6 +291,84 @@ XY_IMPL(int, on_add, unsigned, ref, unsigned, type, uint64_t, v)
 }
 
 static int
+stone_art_decorate(unsigned ref, unsigned type, char *buf, size_t len)
+{
+	static const char *const s_stone_slugs[17] = {
+		"temperate_rainforest/SeixoRio",
+		"temperate_rainforest/FragmentoGranito",
+		"alpine_tundra/FragmentoGneiss",
+		"alpine_tundra/SeixoMorena",
+		"mediterranean/SeixoRioCalcario",
+		"shrubland/SeixoGranito",
+		"shrubland/AfloramentoQuartzito",
+		"wetland/SeixoMolhado",
+		"tropical_rainforest/SeixosMolhados",
+		"volcanic/AfloramentoEscoria",
+		"minerals/SoloAmbar",
+		"minerals/SoloCarvao",
+		"minerals/SoloEsmeralda",
+		"minerals/SoloJade",
+		"minerals/SoloObsidiana",
+		"minerals/SoloPrata",
+		"minerals/SoloSal",
+	};
+	static const char *const s_rock_slugs[17] = {
+		"temperate_rainforest/ClusterSeixosMolhados",
+		"temperate_rainforest/PedraMusgoHumido",
+		"alpine_tundra/PedraGranitoAlpino",
+		"alpine_tundra/RochaLiquenAlpino",
+		"mediterranean/PedraLateritica",
+		"mediterranean/PedraMusgoSeco",
+		"shrubland/ClusterSeixosSoltos",
+		"shrubland/PedraLiquenSeco",
+		"wetland/PedraAlgas",
+		"wetland/AfloramentoLama",
+		"tropical_rainforest/PedraRolada",
+		"tropical_rainforest/AfloramentoRaizes",
+		"volcanic/FragmentoBasalto",
+		"volcanic/ClusterPedraPomes",
+		"minerals/ClusterCarvao",
+		"minerals/ClusterEsmeralda",
+		"minerals/ClusterPrata",
+	};
+	static const char *const s_boulder_slugs[17] = {
+		"tropical_rainforest/BoulderCascataMusgo",
+		"tropical_rainforest/BoulderMusgo",
+		"tropical_rainforest/AfloramentoRaizes",
+		"tropical_rainforest/PedraRolada",
+		"temperate_rainforest/PedraMusgoHumido",
+		"temperate_rainforest/ClusterSeixosMolhados",
+		"alpine_tundra/PedraGlacialFendida",
+		"alpine_tundra/RochaLiquenAlpino",
+		"mediterranean/BlocoCalcarioNatural",
+		"mediterranean/PedraMusgoSeco",
+		"wetland/PedraMusgoHumido",
+		"wetland/PedraAlgas",
+		"shrubland/PedraLiquenSeco",
+		"volcanic/BoulderLavaSolidificada",
+		"hot_desert/ClusterFerro",
+		"hot_desert/PepitasOuro",
+		"minerals/ClusterObsidiana",
+	};
+
+	OBJ obj;
+	if (type != type_mineral || !buf || !len)
+		return 0;
+	if (nd_get(HD_OBJ, &obj, &ref) != 0)
+		return 0;
+
+	unsigned idx = obj.art_id ? ((obj.art_id - 1u) % 17u) : 0u;
+	const char *slug = s_stone_slugs[idx];
+	if (obj.skid == boulder_skel_id)
+		slug = s_boulder_slugs[idx];
+	else if (obj.skid == rock_skel_id)
+		slug = s_rock_slugs[idx];
+
+	snprintf(buf, len, "mineral/%s_albedo.png", slug);
+	return 1;
+}
+
+static int
 stone_row(const char *const *f, size_t n, void *user)
 {
 	(void)user;
@@ -346,6 +424,7 @@ xy_install(void)
 
 	core_noise_decorate(stone_noise_decorate);
 	core_empty_tile_decorate(stone_empty_tile_decorate);
+	core_art_decorate(stone_art_decorate);
 
 	WARN("nd-stone: xy_install, type \"mineral\" = %u, skel %u\n",
 		type_mineral, stone_skel_id);
