@@ -65,10 +65,16 @@ has beyond the house pair. `XXH32` is self-contained in that header, so **no
 * `on_add(ref, type, v)` is where the art variant is chosen:
   `obj.art_id = XXH32(&v, sizeof(v), 2) % skel.max_art`, so the same `v` always
   yields the same variant and the world is reproducible.
+* `stone_art_decorate()` (registered via `core_art_decorate()`) maps each
+  mineral's `art_id` and skeleton tier (`stone`, `rock`, `boulder`) across 17
+  biome-grouped specimen slugs per tier to `mineral/<biome>/<Specimen>_albedo.png`.
 
 ## Packaged Assets
 
-- **Art (`art/`)**: Geological, mineral, and stone resource graphics stored in `art/mineral/`.
+- **Art (`art/mineral/`)**: Biome-grouped geological, mineral, rock, and boulder
+  3D-baked orthographic albedo sprites and tangent-space normal maps across
+  `alpine_tundra`, `hot_desert`, `mediterranean`, `minerals`, `shrubland`,
+  `temperate_rainforest`, `tropical_rainforest`, `volcanic`, and `wetland`.
 
 ## Testing
 

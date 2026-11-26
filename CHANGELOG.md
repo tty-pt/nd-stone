@@ -1,6 +1,10 @@
 ## [Unreleased] (target: v1.0.3)
 
 ### Added
+- **Biome-Aware Mineral Art Decorator (`src/libnd-stone.c`)**:
+  - Added `stone_art_decorate()` registered via `core_art_decorate()`, mapping mineral `art_id` and skeleton tier (`stone_skel_id`, `rock_skel_id`, `boulder_skel_id`) across 17 biome-grouped slugs per tier to `mineral/<biome>/<Specimen>_albedo.png`.
+- **3D-Baked Orthographic Stone & Mineral Sprites (`art/mineral/`)**:
+  - Added and regenerated 52 biome-grouped stone, rock, boulder, and mineral specimen sprite pairs (104 albedo + tangent-space normal map PNGs across `alpine_tundra`, `hot_desert`, `mediterranean`, `minerals`, `shrubland`, `temperate_rainforest`, `tropical_rainforest`, `volcanic`, and `wetland`) without chromakey spill.
 - **Shared Geological Specification Header & Biome-Tuned Distribution (`include/nd/stone.h`, `src/libnd-stone.c`)**:
   - Added `<nd/stone.h>` (`nd_stone_spec_t`, `nd_stone_noise_eval_ex`) for deterministic server/client mineral and boulder evaluation.
   - Tuned stone and boulder spawn density across biomes (enhancing rocky alpine, scree, volcanic, and desert outcrop distribution while keeping fertile meadows open).
